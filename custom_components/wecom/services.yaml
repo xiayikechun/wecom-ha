@@ -95,22 +95,14 @@ send_message:
         object:
           fields:
             title:
-              name: 标题
-              required: true
               selector:
                 text:
             description:
-              name: 描述
-              required: false
               selector:
                 text:
             url:
-              name: 链接
-              required: true
               selector:
                 text:
             picurl:
-              name: 图片链接
-              required: false
               selector:
                 text:
