@@ -1,11 +1,11 @@
 # 企业微信消息服务定义，支持多实例与别名
 send_message:
   name: 发送消息
-  description: 通过企业微信应用发送消息到指定成员、部门或标签。可通过 config_entry_id 或 app_name 指定使用哪个配置条目。
+  description: 通过企业微信应用发送消息到指定成员、部门或标签。支持 text、markdown、news 等类型。
   fields:
     message:
       name: 消息内容
-      description: 要发送的消息正文。
+      description: 要发送的消息正文。对于 news 类型，此字段可以留空。
       required: true
       example: "您好，这是一条测试消息。"
       selector:
@@ -13,7 +13,7 @@ send_message:
           multiline: true
     message_type:
       name: 消息类型
-      description: 消息格式，text 为纯文本，markdown 为 Markdown 格式。
+      description: "消息格式：text（纯文本）、markdown（Markdown）、news（图文消息）。"
       required: false
       default: "text"
       selector:
@@ -21,6 +21,7 @@ send_message:
           options:
             - "text"
             - "markdown"
+            - "news"
     touser:
       name: 接收成员
       description: "成员ID列表，多个用竖线 | 分隔。例如: 'UserID1|UserID2'。若不指定，需提供 toparty 或 totag。"
@@ -86,3 +87,30 @@ send_message:
       example: "办公应用"
       selector:
         text:
+    articles:
+      name: 图文消息列表
+      description: "仅当 message_type 为 news 时使用。定义一个文章列表，每个文章包含 title（标题）、description（描述）、url（链接）、picurl（图片链接）。"
+      required: false
+      selector:
+        object:
+          fields:
+            title:
+              name: 标题
+              required: true
+              selector:
+                text:
+            description:
+              name: 描述
+              required: false
+              selector:
+                text:
+            url:
+              name: 链接
+              required: true
+              selector:
+                text:
+            picurl:
+              name: 图片链接
+              required: false
+              selector:
+                text:

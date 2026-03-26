@@ -1,4 +1,4 @@
-"""企业微信通知插件的初始化模块，支持多实例与别名"""
+"""企业微信通知插件，支持多实例、别名、图文消息等"""
 
 import logging
 from datetime import datetime, timedelta
@@ -22,6 +22,7 @@ from .const import (
     SERVICE_SEND_MESSAGE,
     MSG_TYPE_TEXT,
     MSG_TYPE_MARKDOWN,
+    MSG_TYPE_NEWS,
     API_GET_TOKEN,
     API_SEND_MESSAGE,
     TOKEN_EXPIRE_TIME,
@@ -29,12 +30,22 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-# 服务参数验证，增加 app_name 字段
+# 单篇文章验证架构
+ARTICLE_SCHEMA = vol.Schema(
+    {
+        vol.Required("title"): cv.string,
+        vol.Optional("description", default=""): cv.string,
+        vol.Required("url"): cv.string,
+        vol.Optional("picurl", default=""): cv.string,
+    }
+)
+
+# 服务参数验证
 SEND_MESSAGE_SCHEMA = vol.Schema(
     {
         vol.Required("message"): cv.string,
         vol.Optional("message_type", default=MSG_TYPE_TEXT): vol.In(
-            [MSG_TYPE_TEXT, MSG_TYPE_MARKDOWN]
+            [MSG_TYPE_TEXT, MSG_TYPE_MARKDOWN, MSG_TYPE_NEWS]
         ),
         vol.Optional("touser"): cv.string,
         vol.Optional("toparty"): cv.string,
@@ -42,8 +53,9 @@ SEND_MESSAGE_SCHEMA = vol.Schema(
         vol.Optional("safe", default=0): vol.Coerce(int),
         vol.Optional("enable_duplicate_check", default=0): vol.Coerce(int),
         vol.Optional("duplicate_check_interval", default=1800): vol.Coerce(int),
-        vol.Optional(CONF_CONFIG_ENTRY_ID): cv.string,  # 仍支持原ID
-        vol.Optional(CONF_APP_NAME_PARAM): cv.string,   # 新增：应用别名
+        vol.Optional(CONF_CONFIG_ENTRY_ID): cv.string,
+        vol.Optional(CONF_APP_NAME_PARAM): cv.string,
+        vol.Optional("articles"): vol.All(cv.ensure_list, [ARTICLE_SCHEMA]),
     },
     extra=vol.ALLOW_EXTRA,
 )
@@ -99,6 +111,7 @@ class WeComAPI:
         safe: int = 0,
         enable_duplicate_check: int = 0,
         duplicate_check_interval: int = 1800,
+        articles: list = None,
     ) -> dict:
         """发送消息到企业微信"""
         token = await self.get_access_token(session)
@@ -120,12 +133,28 @@ class WeComAPI:
         if not any([touser, toparty, totag]):
             raise ValueError("必须指定touser、toparty或totag中的至少一个")
 
+        # 根据消息类型填充内容
         if message_type == MSG_TYPE_TEXT:
             msg_body["msgtype"] = "text"
             msg_body["text"] = {"content": message}
         elif message_type == MSG_TYPE_MARKDOWN:
             msg_body["msgtype"] = "markdown"
             msg_body["markdown"] = {"content": message}
+        elif message_type == MSG_TYPE_NEWS:
+            if not articles:
+                raise ValueError("发送 news 类型消息时必须提供 articles 参数")
+            article_list = []
+            for article in articles:
+                article_list.append(
+                    {
+                        "title": article["title"],
+                        "description": article.get("description", ""),
+                        "url": article["url"],
+                        "picurl": article.get("picurl", ""),
+                    }
+                )
+            msg_body["msgtype"] = "news"
+            msg_body["news"] = {"articles": article_list}
         else:
             raise ValueError(f"不支持的消息类型: {message_type}")
 
@@ -163,7 +192,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     }
 
     # 建立别名映射（用于快速查找）
-    # 注意：别名全局唯一，如果重复，后添加的会覆盖先添加的映射（但仍可通过ID访问）
     if CONF_APP_NAME in config and config[CONF_APP_NAME]:
         alias = config[CONF_APP_NAME]
         # 存储到别名映射字典，便于服务调用时查找
@@ -179,14 +207,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
             # 确定使用的配置条目
             if app_name:
-                # 根据别名查找 entry_id
                 aliases = hass.data[DOMAIN].get("aliases", {})
                 if app_name not in aliases:
                     raise ValueError(f"未找到别名为 '{app_name}' 的应用，请检查配置或使用 config_entry_id")
                 entry_id = aliases[app_name]
                 _LOGGER.debug("通过别名 '%s' 找到配置条目: %s", app_name, entry_id)
             elif entry_id:
-                # 直接使用提供的 ID
                 if entry_id not in hass.data[DOMAIN]:
                     raise ValueError(f"未找到配置条目ID: {entry_id}")
             else:
@@ -208,6 +234,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     safe=data.get("safe", 0),
                     enable_duplicate_check=data.get("enable_duplicate_check", 0),
                     duplicate_check_interval=data.get("duplicate_check_interval", 1800),
+                    articles=data.get("articles"),
                 )
             except Exception as err:
                 _LOGGER.error("服务调用失败: %s", err)

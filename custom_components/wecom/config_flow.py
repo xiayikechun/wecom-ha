@@ -63,9 +63,8 @@ class WeComConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors = {}
         if user_input is not None:
             try:
-                # 验证凭据
                 info = await validate_input(self.hass, user_input)
-                # 使用 corp_id + agent_id 作为唯一标识符
+                # 使用 corp_id + agent_id 作为唯一标识符，允许同一企业添加多个应用
                 unique_id = f"{user_input[CONF_CORP_ID]}_{user_input[CONF_AGENT_ID]}"
                 await self.async_set_unique_id(unique_id)
                 self._abort_if_unique_id_configured()

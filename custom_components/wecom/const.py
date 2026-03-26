@@ -7,11 +7,11 @@ CONF_CORP_ID = "corp_id"
 CONF_CORP_SECRET = "corp_secret"
 CONF_AGENT_ID = "agent_id"
 CONF_DEFAULT_TOUSER = "default_touser"
-CONF_APP_NAME = "app_name"          # 新增：应用别名
+CONF_APP_NAME = "app_name"          # 应用别名
 
 # 服务参数
 CONF_CONFIG_ENTRY_ID = "config_entry_id"
-CONF_APP_NAME_PARAM = "app_name"    # 服务调用时的参数名
+CONF_APP_NAME_PARAM = "app_name"    # 服务调用时的别名参数
 
 # 服务名称
 SERVICE_SEND_MESSAGE = "send_message"
@@ -19,6 +19,7 @@ SERVICE_SEND_MESSAGE = "send_message"
 # 消息类型
 MSG_TYPE_TEXT = "text"
 MSG_TYPE_MARKDOWN = "markdown"
+MSG_TYPE_NEWS = "news"
 
 # API 端点
 API_BASE = "https://qyapi.weixin.qq.com/cgi-bin"
