@@ -1,0 +1,88 @@
+# 企业微信消息服务定义，支持多实例与别名
+send_message:
+  name: 发送消息
+  description: 通过企业微信应用发送消息到指定成员、部门或标签。可通过 config_entry_id 或 app_name 指定使用哪个配置条目。
+  fields:
+    message:
+      name: 消息内容
+      description: 要发送的消息正文。
+      required: true
+      example: "您好，这是一条测试消息。"
+      selector:
+        text:
+          multiline: true
+    message_type:
+      name: 消息类型
+      description: 消息格式，text 为纯文本，markdown 为 Markdown 格式。
+      required: false
+      default: "text"
+      selector:
+        select:
+          options:
+            - "text"
+            - "markdown"
+    touser:
+      name: 接收成员
+      description: "成员ID列表，多个用竖线 | 分隔。例如: 'UserID1|UserID2'。若不指定，需提供 toparty 或 totag。"
+      required: false
+      example: "zhangsan|lisi"
+      selector:
+        text:
+    toparty:
+      name: 接收部门
+      description: "部门ID列表，多个用竖线 | 分隔。例如: '1|2'。"
+      required: false
+      example: "1|2"
+      selector:
+        text:
+    totag:
+      name: 接收标签
+      description: "标签ID列表，多个用竖线 | 分隔。"
+      required: false
+      example: "1|2"
+      selector:
+        text:
+    safe:
+      name: 保密消息
+      description: "是否为保密消息，0表示否，1表示是。"
+      required: false
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 1
+          step: 1
+    enable_duplicate_check:
+      name: 启用重复检查
+      description: "是否开启重复消息检查，0表示关闭，1表示开启。"
+      required: false
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 1
+          step: 1
+    duplicate_check_interval:
+      name: 重复检查间隔
+      description: "重复消息检查的间隔时间（秒）。"
+      required: false
+      default: 1800
+      selector:
+        number:
+          min: 0
+          max: 86400
+          unit_of_measurement: "秒"
+    config_entry_id:
+      name: 配置条目ID
+      description: "指定使用哪个企业微信应用（配置条目ID）。如果不指定，将使用第一个添加的应用。与 app_name 二选一。"
+      required: false
+      example: "abcdef123456"
+      selector:
+        text:
+    app_name:
+      name: 应用别名
+      description: "指定使用哪个企业微信应用（自定义别名）。需要在集成选项中设置别名。与 config_entry_id 二选一。"
+      required: false
+      example: "办公应用"
+      selector:
+        text:
