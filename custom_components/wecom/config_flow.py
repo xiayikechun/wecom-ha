@@ -90,14 +90,13 @@ class WeComConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @callback
     def async_get_options_flow(config_entry):
         """返回选项流处理器"""
-        return WeComOptionsFlowHandler(config_entry)
+        return WeComOptionsFlowHandler()
 
 
 class WeComOptionsFlowHandler(config_entries.OptionsFlow):
     """处理选项更新，支持修改别名等"""
 
-    def __init__(self, config_entry):
-        self.config_entry = config_entry
+    # 注意：这里没有 __init__ 方法，直接使用父类的 config_entry 属性
 
     async def async_step_init(self, user_input=None):
         """管理选项页面"""
