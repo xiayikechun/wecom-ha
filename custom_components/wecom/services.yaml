@@ -5,8 +5,8 @@ send_message:
   fields:
     message:
       name: 消息内容
-      description: 要发送的消息正文。对于 news 类型，此字段可以留空。
-      required: true
+      description: 要发送的消息正文。text / markdown 类型必填；news 类型可留空。
+      required: false
       example: "您好，这是一条测试消息。"
       selector:
         text:

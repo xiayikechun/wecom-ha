@@ -1,7 +1,8 @@
-"""企业微信通知插件，支持多实例、别名、图文消息等"""
+"""企业微信通知集成，支持多实例、别名、图文消息等。"""
 
+import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import aiohttp
 import voluptuous as vol
@@ -11,21 +12,24 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
-    DOMAIN,
-    CONF_CORP_ID,
-    CONF_CORP_SECRET,
-    CONF_AGENT_ID,
-    CONF_DEFAULT_TOUSER,
-    CONF_APP_NAME,
-    CONF_CONFIG_ENTRY_ID,
-    CONF_APP_NAME_PARAM,
-    SERVICE_SEND_MESSAGE,
-    MSG_TYPE_TEXT,
-    MSG_TYPE_MARKDOWN,
-    MSG_TYPE_NEWS,
     API_GET_TOKEN,
     API_SEND_MESSAGE,
+    CONF_APP_NAME,
+    CONF_APP_NAME_PARAM,
+    CONF_CONFIG_ENTRY_ID,
+    CONF_AGENT_ID,
+    CONF_CORP_ID,
+    CONF_CORP_SECRET,
+    CONF_DEFAULT_TOUSER,
+    DATA_ALIASES,
+    DOMAIN,
+    INVALID_TOKEN_ERRCODES,
+    MSG_TYPE_MARKDOWN,
+    MSG_TYPE_NEWS,
+    MSG_TYPE_TEXT,
+    SERVICE_SEND_MESSAGE,
     TOKEN_EXPIRE_TIME,
+    TOKEN_REFRESH_MARGIN,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -43,16 +47,20 @@ ARTICLE_SCHEMA = vol.Schema(
 # 服务参数验证
 SEND_MESSAGE_SCHEMA = vol.Schema(
     {
-        vol.Required("message"): cv.string,
+        vol.Optional("message", default=""): cv.string,
         vol.Optional("message_type", default=MSG_TYPE_TEXT): vol.In(
             [MSG_TYPE_TEXT, MSG_TYPE_MARKDOWN, MSG_TYPE_NEWS]
         ),
         vol.Optional("touser"): cv.string,
         vol.Optional("toparty"): cv.string,
         vol.Optional("totag"): cv.string,
-        vol.Optional("safe", default=0): vol.Coerce(int),
-        vol.Optional("enable_duplicate_check", default=0): vol.Coerce(int),
-        vol.Optional("duplicate_check_interval", default=1800): vol.Coerce(int),
+        vol.Optional("safe", default=0): vol.All(vol.Coerce(int), vol.Range(min=0, max=1)),
+        vol.Optional("enable_duplicate_check", default=0): vol.All(
+            vol.Coerce(int), vol.Range(min=0, max=1)
+        ),
+        vol.Optional("duplicate_check_interval", default=1800): vol.All(
+            vol.Coerce(int), vol.Range(min=0, max=86400)
+        ),
         vol.Optional(CONF_CONFIG_ENTRY_ID): cv.string,
         vol.Optional(CONF_APP_NAME_PARAM): cv.string,
         vol.Optional("articles"): vol.All(cv.ensure_list, [ARTICLE_SCHEMA]),
@@ -62,7 +70,7 @@ SEND_MESSAGE_SCHEMA = vol.Schema(
 
 
 class WeComAPI:
-    """企业微信API封装，处理access_token获取与刷新"""
+    """企业微信 API 封装，处理 access_token 获取、缓存与刷新。"""
 
     def __init__(self, corp_id, corp_secret, agent_id):
         self.corp_id = corp_id
@@ -70,35 +78,67 @@ class WeComAPI:
         self.agent_id = agent_id
         self._access_token = None
         self._token_expires_at = None
+        # 防止多实例并发重复获取 token
+        self._token_lock = asyncio.Lock()
 
-    async def get_access_token(self, session: aiohttp.ClientSession) -> str:
-        """获取有效的access_token，如果缓存有效则直接返回"""
+    def _now(self) -> datetime:
+        """返回 UTC 时间，避免本地时区/夏令时导致的缓存计算偏差。"""
+        return datetime.now(timezone.utc)
+
+    async def get_access_token(
+        self, session: aiohttp.ClientSession, force_refresh: bool = False
+    ) -> str:
+        """获取有效的 access_token；缓存有效时直接返回。
+
+        force_refresh=True 用于 token 被服务端判定失效时强制重新获取。
+        """
+        now = self._now()
         if (
-            self._access_token
+            not force_refresh
+            and self._access_token
             and self._token_expires_at
-            and datetime.now() < self._token_expires_at
+            and now < self._token_expires_at
         ):
             return self._access_token
 
-        params = {
-            "corpid": self.corp_id,
-            "corpsecret": self.corp_secret,
-        }
-        try:
-            async with session.get(API_GET_TOKEN, params=params) as resp:
-                data = await resp.json()
-                if data.get("errcode") != 0:
-                    _LOGGER.error("获取企业微信access_token失败: %s", data.get("errmsg"))
-                    raise Exception(f"获取token失败: {data.get('errmsg')}")
-
-                self._access_token = data["access_token"]
-                expires_in = data.get("expires_in", TOKEN_EXPIRE_TIME)
-                self._token_expires_at = datetime.now() + timedelta(seconds=expires_in)
-                _LOGGER.debug("成功获取access_token，有效期%d秒", expires_in)
+        # 加锁，避免并发调用同时刷新 token
+        async with self._token_lock:
+            now = self._now()
+            if (
+                not force_refresh
+                and self._access_token
+                and self._token_expires_at
+                and now < self._token_expires_at
+            ):
                 return self._access_token
-        except aiohttp.ClientError as err:
-            _LOGGER.error("请求企业微信API出错: %s", err)
-            raise
+
+            params = {
+                "corpid": self.corp_id,
+                "corpsecret": self.corp_secret,
+            }
+            try:
+                async with session.get(API_GET_TOKEN, params=params) as resp:
+                    data = await resp.json(content_type=None)
+            except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+                _LOGGER.error("请求企业微信 API 出错: %s", err)
+                raise
+
+            if data.get("errcode") != 0:
+                _LOGGER.error(
+                    "获取企业微信 access_token 失败: %s (errcode: %s)",
+                    data.get("errmsg"),
+                    data.get("errcode"),
+                )
+                raise Exception(f"获取token失败: {data.get('errmsg')}")
+
+            self._access_token = data["access_token"]
+            expires_in = int(data.get("expires_in", TOKEN_EXPIRE_TIME))
+            # 提前 TOKEN_REFRESH_MARGIN 秒过期，留出刷新缓冲
+            self._token_expires_at = now + timedelta(
+                seconds=max(expires_in - TOKEN_REFRESH_MARGIN, 0)
+            )
+            _LOGGER.debug("成功获取 access_token，有效期 %d 秒", expires_in)
+            return self._access_token
 
     async def send_message(
         self,
@@ -112,8 +152,20 @@ class WeComAPI:
         enable_duplicate_check: int = 0,
         duplicate_check_interval: int = 1800,
         articles: list = None,
+        default_touser: str = None,
     ) -> dict:
-        """发送消息到企业微信"""
+        """发送消息到企业微信。"""
+        # 未指定任何接收方时，回退到配置的默认接收人
+        if not any([touser, toparty, totag]) and default_touser:
+            touser = default_touser
+
+        if not any([touser, toparty, totag]):
+            raise ValueError("必须指定 touser、toparty 或 totag 中的至少一个")
+
+        # news 类型正文可为空，text/markdown 必须有内容
+        if message_type in (MSG_TYPE_TEXT, MSG_TYPE_MARKDOWN) and not message:
+            raise ValueError("text/markdown 类型消息的消息内容不能为空")
+
         token = await self.get_access_token(session)
 
         msg_body = {
@@ -130,9 +182,6 @@ class WeComAPI:
         if totag:
             msg_body["totag"] = totag
 
-        if not any([touser, toparty, totag]):
-            raise ValueError("必须指定touser、toparty或totag中的至少一个")
-
         # 根据消息类型填充内容
         if message_type == MSG_TYPE_TEXT:
             msg_body["msgtype"] = "text"
@@ -143,44 +192,58 @@ class WeComAPI:
         elif message_type == MSG_TYPE_NEWS:
             if not articles:
                 raise ValueError("发送 news 类型消息时必须提供 articles 参数")
-            article_list = []
-            for article in articles:
-                article_list.append(
-                    {
-                        "title": article["title"],
-                        "description": article.get("description", ""),
-                        "url": article["url"],
-                        "picurl": article.get("picurl", ""),
-                    }
-                )
+            article_list = [
+                {
+                    "title": article["title"],
+                    "description": article.get("description", ""),
+                    "url": article["url"],
+                    "picurl": article.get("picurl", ""),
+                }
+                for article in articles
+            ]
             msg_body["msgtype"] = "news"
             msg_body["news"] = {"articles": article_list}
         else:
             raise ValueError(f"不支持的消息类型: {message_type}")
 
+        result = await self._post(session, token, msg_body)
+        # token 在服务端失效（而本地缓存未过期）时，强制刷新并重试一次
+        if result.get("errcode") in INVALID_TOKEN_ERRCODES:
+            _LOGGER.warning(
+                "access_token 已失效 (errcode=%s)，强制刷新后重试", result.get("errcode")
+            )
+            token = await self.get_access_token(session, force_refresh=True)
+            result = await self._post(session, token, msg_body)
+
+        if result.get("errcode") != 0:
+            _LOGGER.error(
+                "发送企业微信消息失败: %s (errcode: %s)",
+                result.get("errmsg"),
+                result.get("errcode"),
+            )
+            raise Exception(f"发送失败: {result.get('errmsg')}")
+
+        _LOGGER.debug("消息发送成功，返回: %s", result)
+        return result
+
+    @staticmethod
+    async def _post(
+        session: aiohttp.ClientSession, token: str, msg_body: dict
+    ) -> dict:
+        """向发送消息接口提交请求并返回 JSON 结果。"""
         url = f"{API_SEND_MESSAGE}?access_token={token}"
         try:
             async with session.post(url, json=msg_body) as resp:
-                result = await resp.json()
-                if result.get("errcode") != 0:
-                    _LOGGER.error(
-                        "发送企业微信消息失败: %s (errcode: %s)",
-                        result.get("errmsg"),
-                        result.get("errcode"),
-                    )
-                    raise Exception(f"发送失败: {result.get('errmsg')}")
-                _LOGGER.debug("消息发送成功，返回: %s", result)
-                return result
-        except aiohttp.ClientError as err:
+                return await resp.json(content_type=None)
+        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
             _LOGGER.error("发送消息时请求异常: %s", err)
             raise
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """根据配置条目设置集成，支持多实例与别名映射"""
+    """根据配置条目设置集成，支持多实例与别名映射。"""
     hass.data.setdefault(DOMAIN, {})
 
-    # 保存配置和API实例
     config = dict(entry.data)
     hass.data[DOMAIN][entry.entry_id] = {
         "config": config,
@@ -192,36 +255,54 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     }
 
     # 建立别名映射（用于快速查找）
-    if CONF_APP_NAME in config and config[CONF_APP_NAME]:
+    if config.get(CONF_APP_NAME):
         alias = config[CONF_APP_NAME]
-        # 存储到别名映射字典，便于服务调用时查找
-        hass.data[DOMAIN].setdefault("aliases", {})[alias] = entry.entry_id
+        aliases = hass.data[DOMAIN].setdefault(DATA_ALIASES, {})
+        existing = aliases.get(alias)
+        if existing and existing != entry.entry_id:
+            _LOGGER.warning(
+                "应用别名 '%s' 已被其他配置使用，现已指向最新的配置条目", alias
+            )
+        aliases[alias] = entry.entry_id
 
     # 如果服务尚未注册，则注册全局服务
     if not hass.services.has_service(DOMAIN, SERVICE_SEND_MESSAGE):
+
         async def handle_send_message(call: ServiceCall) -> None:
-            """处理发送消息的服务调用，支持多实例与别名"""
+            """处理发送消息的服务调用，支持多实例与别名。"""
             data = call.data
             entry_id = data.get(CONF_CONFIG_ENTRY_ID)
             app_name = data.get(CONF_APP_NAME_PARAM)
 
+            # 仅统计真正的配置条目，排除 aliases 保留键
+            entries = {
+                key: value
+                for key, value in hass.data[DOMAIN].items()
+                if key != DATA_ALIASES and isinstance(value, dict) and "api" in value
+            }
+            if not entries:
+                raise ValueError("尚未配置任何企业微信应用")
+
             # 确定使用的配置条目
             if app_name:
-                aliases = hass.data[DOMAIN].get("aliases", {})
+                aliases = hass.data[DOMAIN].get(DATA_ALIASES, {})
                 if app_name not in aliases:
-                    raise ValueError(f"未找到别名为 '{app_name}' 的应用，请检查配置或使用 config_entry_id")
+                    raise ValueError(
+                        f"未找到别名为 '{app_name}' 的应用，请检查配置或使用 config_entry_id"
+                    )
                 entry_id = aliases[app_name]
                 _LOGGER.debug("通过别名 '%s' 找到配置条目: %s", app_name, entry_id)
             elif entry_id:
-                if entry_id not in hass.data[DOMAIN]:
+                if entry_id not in entries:
                     raise ValueError(f"未找到配置条目ID: {entry_id}")
             else:
                 # 未指定任何标识，使用第一个配置条目
-                first_entry_id = next(iter(hass.data[DOMAIN].keys()))
-                entry_id = first_entry_id
-                _LOGGER.debug("未指定 config_entry_id 或 app_name，使用默认: %s", entry_id)
+                entry_id = next(iter(entries))
+                _LOGGER.debug(
+                    "未指定 config_entry_id 或 app_name，使用默认: %s", entry_id
+                )
 
-            target_entry = hass.data[DOMAIN][entry_id]
+            target_entry = entries[entry_id]
             api = target_entry["api"]
             try:
                 await api.send_message(
@@ -233,8 +314,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     totag=data.get("totag"),
                     safe=data.get("safe", 0),
                     enable_duplicate_check=data.get("enable_duplicate_check", 0),
-                    duplicate_check_interval=data.get("duplicate_check_interval", 1800),
+                    duplicate_check_interval=data.get(
+                        "duplicate_check_interval", 1800
+                    ),
                     articles=data.get("articles"),
+                    default_touser=target_entry["config"].get(CONF_DEFAULT_TOUSER),
                 )
             except Exception as err:
                 _LOGGER.error("服务调用失败: %s", err)
@@ -251,21 +335,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """卸载集成时清理"""
-    # 移除该配置条目的数据
-    if DOMAIN in hass.data and entry.entry_id in hass.data[DOMAIN]:
-        # 如果该条目有别名，从映射中删除
-        config = hass.data[DOMAIN][entry.entry_id].get("config", {})
-        if CONF_APP_NAME in config and config[CONF_APP_NAME]:
+    """卸载集成时清理。"""
+    domain_data = hass.data.get(DOMAIN, {})
+
+    if entry.entry_id in domain_data:
+        config = domain_data[entry.entry_id].get("config", {})
+        if config.get(CONF_APP_NAME):
             alias = config[CONF_APP_NAME]
-            aliases = hass.data[DOMAIN].get("aliases", {})
+            aliases = domain_data.get(DATA_ALIASES, {})
             if aliases.get(alias) == entry.entry_id:
                 del aliases[alias]
-        hass.data[DOMAIN].pop(entry.entry_id)
+        domain_data.pop(entry.entry_id)
 
-    # 如果没有任何配置条目了，移除全局服务
-    if not hass.data.get(DOMAIN):
-        hass.services.async_remove(DOMAIN, SERVICE_SEND_MESSAGE)
+    # 没有任何配置条目时移除全局服务（aliases 是保留键，不算条目）
+    remaining = [
+        key
+        for key, value in domain_data.items()
+        if key != DATA_ALIASES and isinstance(value, dict) and "api" in value
+    ]
+    if not remaining:
+        if hass.services.has_service(DOMAIN, SERVICE_SEND_MESSAGE):
+            hass.services.async_remove(DOMAIN, SERVICE_SEND_MESSAGE)
         hass.data.pop(DOMAIN, None)
 
     return True

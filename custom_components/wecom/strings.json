@@ -1,0 +1,45 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "连接企业微信",
+        "description": "填写企业微信应用的凭据以添加通知集成。",
+        "data": {
+          "corp_id": "企业 ID（CorpID）",
+          "corp_secret": "应用 Secret",
+          "agent_id": "应用 AgentId",
+          "default_touser": "默认接收成员（可选）",
+          "app_name": "应用别名（可选，用于区分多实例）"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "无法连接企业微信接口，请检查网络与凭据。",
+      "invalid_auth": "凭据无效，请检查 CorpID、Secret 与 AgentId。",
+      "unknown": "发生未知错误，请查看日志。"
+    },
+    "abort": {
+      "already_configured": "该企业应用已配置。"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "配置企业微信",
+        "description": "修改凭据或别名后，集成会自动重新加载以应用更改。",
+        "data": {
+          "corp_id": "企业 ID（CorpID）",
+          "corp_secret": "应用 Secret",
+          "agent_id": "应用 AgentId",
+          "default_touser": "默认接收成员（可选）",
+          "app_name": "应用别名（可选，用于区分多实例）"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "无法连接企业微信接口，请检查网络与凭据。",
+      "invalid_auth": "凭据无效，请检查 CorpID、Secret 与 AgentId。",
+      "unknown": "发生未知错误，请查看日志。"
+    }
+  }
+}
